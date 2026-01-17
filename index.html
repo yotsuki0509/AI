@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>新年快樂 宗瑋工業</title>
+    <!-- 引入 MediaPipe 與 Three.js 核心程式庫 -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #00020a;
+            font-family: "Microsoft JhengHei", "微軟正黑體", sans-serif;
+            touch-action: none;
+        }
+
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        /* 視訊預覽框 */
+        #video-container {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 120px;
+            height: 160px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 8px;
+            overflow: hidden;
+            z-index: 10;
+            transform: scaleX(-1);
+            opacity: 0.4;
+            background: #000;
+            display: none;
+        }
+
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        /* UI 指示與祝賀文字 */
+        #overlay-ui {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            text-align: center;
+            z-index: 5;
+            width: 90%;
+        }
+
+        .congrats-text {
+            color: #ffd700;
+            font-size: 2.8rem; /* 針對中文字串縮小基礎字級 */
+            font-weight: 900;
+            text-shadow: 0 0 20px rgba(255, 215, 0, 0.8), 0 0 40px rgba(255, 68, 0, 0.5);
+            opacity: 0;
+            transition: opacity 0.5s, transform 0.5s;
+            letter-spacing: 2px;
+            line-height: 1.2;
+            word-break: keep-all;
+        }
+
+        @media (min-width: 768px) {
+            .congrats-text { 
+                font-size: 6rem; 
+                letter-spacing: 10px;
+            }
+        }
+
+        .active-text {
+            opacity: 1;
+            transform: scale(1.05);
+        }
+
+        /* 狀態提示 */
+        #status-guide {
+            position: absolute;
+            top: 20px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-size: 1.1rem;
+            letter-spacing: 1px;
+            opacity: 0.8;
+            text-transform: uppercase;
+            padding: 10px;
+        }
+
+        /* 載入畫面 */
+        #loading-screen {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: #00020a;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+            color: #ffd700;
+            text-align: center;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        .loading-dots:after {
+            content: '.';
+            animation: dots 1.5s steps(5, end) infinite;
+        }
+
+        @keyframes dots {
+            0%, 20% { content: '.'; }
+            40% { content: '..'; }
+            60% { content: '...'; }
+            80%, 100% { content: ''; }
+        }
+
+        #mode-indicator {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            color: rgba(255,255,255,0.4);
+            font-size: 0.7rem;
+            text-transform: uppercase;
+        }
+
+        #error-info {
+            font-size: 0.8rem;
+            color: #ff4400;
+            margin-top: 15px;
+            max-width: 250px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="loading-screen">
+        <h2 id="loading-title">初始化能量場<span class="loading-dots"></span></h2>
+        <p id="loading-msg">正在偵測手部感應裝置...</p>
+        <div id="error-info">若長時間未啟動，請確保使用 HTTPS 環境並允許攝影機存取</div>
+    </div>
+
+    <div id="container">
+        <div id="mode-indicator"></div>
+        <div id="status-guide">等待感應中</div>
+        
+        <div id="overlay-ui">
+            <div id="greeting" class="congrats-text">拉長耳朵提高警覺<br>神經細胞全面戒備<br>仙女下凡~~</div>
+        </div>
+
+        <div id="video-container">
+            <video id="input-video" playsinline muted autoplay></video>
+        </div>
+    </div>
+
+    <script>
+        /**
+         * 跨年互動裝置：淡江大學專屬版
+         */
+
+        let scene, camera, renderer, particleSystem;
+        const PARTICLE_COUNT = 8000; 
+        const videoElement = document.getElementById('input-video');
+        const loadingScreen = document.getElementById('loading-screen');
+        const greetingText = document.getElementById('greeting');
+        const statusGuide = document.getElementById('status-guide');
+        const modeIndicator = document.getElementById('mode-indicator');
+        const videoContainer = document.getElementById('video-container');
+
+        let handsData = [];
+        let chargeProgress = 0; 
+        let isCelebrating = false;
+        let isSimulatedMode = false; 
+
+        // 1. 初始化 Three.js 場景
+        function initScene() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 3000);
+            camera.position.z = 800;
+
+            renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+            document.getElementById('container').appendChild(renderer.domElement);
+
+            const geometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(PARTICLE_COUNT * 3);
+            const colors = new Float32Array(PARTICLE_COUNT * 3);
+            const sizes = new Float32Array(PARTICLE_COUNT);
+            const velocities = new Float32Array(PARTICLE_COUNT * 3);
+
+            const palettes = [new THREE.Color(0xffd700), new THREE.Color(0xff4400), new THREE.Color(0x00aaff), new THREE.Color(0xffffff)];
+
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                positions[i * 3] = (Math.random() - 0.5) * 2000;
+                positions[i * 3 + 1] = (Math.random() - 0.5) * 2000;
+                positions[i * 3 + 2] = (Math.random() - 0.5) * 2000;
+                const col = palettes[Math.floor(Math.random() * palettes.length)];
+                colors[i * 3] = col.r; colors[i * 3 + 1] = col.g; colors[i * 3 + 2] = col.b;
+                sizes[i] = Math.random() * 3 + 1;
+                velocities[i * 3] = (Math.random() - 0.5) * 2;
+                velocities[i * 3 + 1] = (Math.random() - 0.5) * 2;
+                velocities[i * 3 + 2] = (Math.random() - 0.5) * 2;
+            }
+
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+            geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+
+            const material = new THREE.PointsMaterial({
+                size: 5, vertexColors: true, transparent: true, opacity: 0.7,
+                blending: THREE.AdditiveBlending, sizeAttenuation: true
+            });
+
+            particleSystem = new THREE.Points(geometry, material);
+            particleSystem.userData.velocities = velocities;
+            scene.add(particleSystem);
+
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+
+        // 2. 初始化手部追蹤
+        async function initHands() {
+            try {
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    throw new Error("HTTPS_REQUIRED_OR_UNSUPPORTED");
+                }
+
+                const hands = new Hands({
+                    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+                });
+
+                hands.setOptions({
+                    maxNumHands: 1, 
+                    modelComplexity: 0,
+                    minDetectionConfidence: 0.4, 
+                    minTrackingConfidence: 0.4
+                });
+
+                hands.onResults(onResults);
+
+                const cameraPipe = new Camera(videoElement, {
+                    onFrame: async () => { await hands.send({ image: videoElement }); },
+                    width: 480, height: 640,
+                    facingMode: 'user'
+                });
+
+                const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("CAMERA_TIMEOUT")), 5000));
+                await Promise.race([cameraPipe.start(), timeoutPromise]);
+                
+                videoContainer.style.display = 'block';
+                modeIndicator.innerText = "感應模式：相機鏡頭";
+                hideLoading();
+
+            } catch (error) {
+                console.warn("啟動失敗，自動進入模擬模式:", error.message);
+                enableFallbackMode();
+            }
+        }
+
+        // 3. 備援模式：支援手機觸控與滑鼠
+        function enableFallbackMode() {
+            isSimulatedMode = true;
+            modeIndicator.innerText = "模擬模式：滑鼠/觸控";
+            
+            window.addEventListener('mousemove', (e) => {
+                updateInteractionPoint(e.clientX, e.clientY, e.buttons === 1);
+            });
+            window.addEventListener('mousedown', () => { if(handsData[0]) handsData[0].isFist = true; });
+            window.addEventListener('mouseup', () => { if(handsData[0]) handsData[0].isFist = false; });
+            
+            window.addEventListener('touchstart', (e) => {
+                const touch = e.touches[0];
+                updateInteractionPoint(touch.clientX, touch.clientY, true);
+            }, {passive: false});
+            window.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                const touch = e.touches[0];
+                updateInteractionPoint(touch.clientX, touch.clientY, true);
+            }, {passive: false});
+            window.addEventListener('touchend', () => { handsData = []; });
+
+            setTimeout(hideLoading, 500);
+        }
+
+        function updateInteractionPoint(clientX, clientY, isEngaged) {
+            const x = (clientX / window.innerWidth - 0.5) * 1500;
+            const y = (0.5 - clientY / window.innerHeight) * 1000;
+            handsData = [{ x, y, isFist: isEngaged }];
+        }
+
+        function hideLoading() {
+            loadingScreen.style.opacity = '0';
+            setTimeout(() => loadingScreen.style.display = 'none', 800);
+        }
+
+        function onResults(results) {
+            if (isSimulatedMode) return;
+            
+            handsData = [];
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                const x = (0.5 - landmarks[9].x) * 1500;
+                const y = (0.5 - landmarks[9].y) * 1000;
+                
+                const tips = [4, 8, 12, 16, 20];
+                let totalDist = 0;
+                tips.forEach(t => {
+                    const d = Math.sqrt(Math.pow(landmarks[t].x - landmarks[0].x, 2) + Math.pow(landmarks[t].y - landmarks[0].y, 2));
+                    totalDist += d;
+                });
+                const isFist = (totalDist / 5) < 0.18;
+                handsData.push({ x, y, isFist });
+            }
+            updateInteraction();
+        }
+
+        function updateInteraction() {
+            if (isCelebrating) return;
+
+            const isEngaged = handsData.length > 0 && handsData[0].isFist;
+            
+            if (isEngaged) {
+                chargeProgress += 1.8;
+                statusGuide.innerText = "能量凝聚中...";
+                statusGuide.style.color = "#ffd700";
+            } else {
+                chargeProgress = Math.max(0, chargeProgress - 2.5);
+                statusGuide.innerText = handsData.length > 0 ? (isSimulatedMode ? "凝聚能量，不要放手！" : "試著合攏手掌...") : (isSimulatedMode ? "點擊或觸控螢幕來吸引能量" : "伸出手掌，握拳來凝聚");
+                statusGuide.style.color = "white";
+            }
+
+            if (chargeProgress >= 100) triggerCelebration();
+        }
+
+        function triggerCelebration() {
+            isCelebrating = true;
+            chargeProgress = 0;
+            greetingText.classList.add('active-text');
+            statusGuide.style.opacity = "0";
+
+            // 粒子爆發
+            const velocities = particleSystem.userData.velocities;
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                velocities[i * 3] = (Math.random() - 0.5) * 80;
+                velocities[i * 3 + 1] = (Math.random() - 0.5) * 80;
+                velocities[i * 3 + 2] = (Math.random() - 0.5) * 80;
+            }
+
+            setTimeout(() => {
+                greetingText.classList.remove('active-text');
+                isCelebrating = false;
+                statusGuide.style.opacity = "0.8";
+            }, 6000);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (isSimulatedMode) updateInteraction();
+
+            const positions = particleSystem.geometry.attributes.position.array;
+            const velocities = particleSystem.userData.velocities;
+
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                let ax = 0, ay = 0, az = 0;
+
+                if (!isCelebrating) {
+                    handsData.forEach(hand => {
+                        const dx = hand.x - positions[i * 3];
+                        const dy = hand.y - positions[i * 3 + 1];
+                        const distSq = dx * dx + dy * dy + 1500;
+                        const force = hand.isFist ? 3500 : 800;
+                        ax += (dx / distSq) * force;
+                        ay += (dy / distSq) * force;
+                    });
+                    ax -= positions[i * 3] * 0.0007;
+                    ay -= positions[i * 3 + 1] * 0.0007;
+                    az -= positions[i * 3 + 2] * 0.0007;
+                }
+
+                velocities[i * 3] = (velocities[i * 3] + ax) * 0.93;
+                velocities[i * 3 + 1] = (velocities[i * 3 + 1] + ay) * 0.93;
+                velocities[i * 3 + 2] = (velocities[i * 3 + 2] + az) * 0.93;
+
+                positions[i * 3] += velocities[i * 3];
+                positions[i * 3 + 1] += velocities[i * 3 + 1];
+                positions[i * 3 + 2] += velocities[i * 3 + 2];
+
+                if (Math.abs(positions[i * 3]) > 2500 || Math.abs(positions[i * 3 + 1]) > 2500) {
+                    positions[i * 3] = (Math.random() - 0.5) * 2000;
+                    positions[i * 3 + 1] = (Math.random() - 0.5) * 2000;
+                    velocities[i * 3] *= 0.1;
+                }
+            }
+
+            particleSystem.geometry.attributes.position.needsUpdate = true;
+            particleSystem.rotation.y += 0.0005;
+
+            if (chargeProgress > 0) {
+                particleSystem.material.size = 5 + (chargeProgress / 5);
+                particleSystem.material.opacity = 0.5 + (chargeProgress / 100);
+            } else {
+                particleSystem.material.size = 5;
+                particleSystem.material.opacity = 0.7;
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        window.onload = () => {
+            initScene();
+            initHands();
+            animate();
+        };
+    </script>
+</body>
+</html>
